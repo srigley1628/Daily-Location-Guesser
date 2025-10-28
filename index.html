@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Daily Location Guesser</title>
+
+  <!-- React UMD builds and Babel (in-browser JSX) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Tailwind CDN (quick styling) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // small SVG icon components
+    const Globe = () => (/* svg */ <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>);
+    const Trophy = () => (<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"></path><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"></path><path d="M4 22h16"></path><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"></path><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"></path><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"></path></svg>);
+    const Clock = () => (<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>);
+    const Target = () => (<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="6"></circle><circle cx="12" cy="12" r="2"></circle></svg>);
+
+    // Locations (replace or extend these image URLs with your own)
+    const LOCATIONS = [
+      { country: 'Japan', city: 'Countryside', lat: 35.6762, lng: 139.6503, image: 'https://images.unsplash.com/photo-1528164344705-47542687000d?w=1600', description: 'Rural mountain village' },
+      { country: 'France', city: 'Provence', lat: 43.9352, lng: 4.3601, image: 'https://images.unsplash.com/photo-1499856871958-5b9627545d1a?w=1600', description: 'Lavender fields' },
+      { country: 'Italy', city: 'Tuscany', lat: 43.7711, lng: 11.2486, image: 'https://images.unsplash.com/photo-1523906834658-6e24ef2386f9?w=1600', description: 'Rolling countryside hills' },
+      // ... keep the rest or add your own
+    ];
+
+    // Ensure every LOCATIONS.country appears in COUNTRIES so users can select it
+    const COUNTRIES = Array.from(new Set([
+      ...LOCATIONS.map(l => l.country),
+      'Japan', 'France', 'Italy', 'Brazil', 'Australia', 'Egypt', 'Peru',
+      'Iceland', 'Thailand', 'United States', 'Greece', 'India', 'Norway',
+      'Morocco', 'China', 'Canada', 'Mexico', 'Spain', 'Turkey', 'New Zealand',
+    ]));
+
+    // COUNTRY_COORDS is a convenience lookup for faster distance calc; LOCATIONS entries may also provide lat/lng
+    const COUNTRY_COORDS = {
+      'Japan': { lat: 36.2048, lng: 138.2529 },
+      'France': { lat: 46.2276, lng: 2.2137 },
+      'Italy': { lat: 41.8719, lng: 12.5674 },
+      'United States': { lat: 37.0902, lng: -95.7129 },
+      // add others used in LOCATIONS as needed
+    };
+
+    // Use UTC date string for per-day keys to avoid timezone ambiguity
+    function utcDateKey() {
+      return new Date().toISOString().slice(0, 10); // YYYY-MM-DD in UTC
+    }
+
+    function getDailyLocation() {
+      // Use days since epoch in UTC
+      const daysSinceEpoch = Math.floor(Date.now() / (1000 * 60 * 60 * 24));
+      const idx = daysSinceEpoch % LOCATIONS.length;
+      return { ...LOCATIONS[idx], _index: idx };
+    }
+
+    function calculateDistance(lat1, lng1, lat2, lng2) {
+      const R = 3958.8; // miles
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+        Math.sin(dLng / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return Math.round(R * c);
+    }
+
+    function LocationGuesser() {
+      const [selectedCountry, setSelectedCountry] = useState('');
+      const [gameState, setGameState] = useState('playing'); // 'playing' | 'won'
+      const [attempts, setAttempts] = useState([]);
+      const [startTime, setStartTime] = useState(Date.now());
+      const [finalTime, setFinalTime] = useState(0);
+      const [leaderboard, setLeaderboard] = useState([]);
+      const [playerName, setPlayerName] = useState('');
+      const [showLeaderboard, setShowLeaderboard] = useState(false);
+      const [dailyLocation] = useState(getDailyLocation());
+      const [hasPlayedToday, setHasPlayedToday] = useState(false);
+      const [tick, setTick] = useState(0); // small tick to update timer
+
+      // simple timer tick so the displayed elapsed time updates
+      useEffect(() => {
+        const id = setInterval(() => setTick((t) => t + 1), 1000);
+        return () => clearInterval(id);
+      }, []);
+
+      // load saved state & leaderboard once
+      useEffect(() => {
+        loadGameState();
+        loadLeaderboard();
+      }, []);
+
+      // autosave whenever key pieces of state change
+      useEffect(() => {
+        saveGameState();
+      }, [gameState, attempts, finalTime, startTime]);
+
+      function todayKey() {
+        return utcDateKey();
+      }
+
+      function loadGameState() {
+        try {
+          const key = todayKey();
+          const saved = localStorage.getItem(`game-state-${key}`);
+          if (saved) {
+            const state = JSON.parse(saved);
+            // if saved state references a different daily location (e.g. LOCATIONS reordered), ignore it
+            if (typeof state.locationIndex !== 'undefined' && state.locationIndex !== dailyLocation._index) {
+              console.warn('Saved game is for a different daily location; ignoring saved state.');
+              return;
+            }
+            if (state.country && state.country !== dailyLocation.country) {
+              // If countries don't match, it's likely an old save — ignore to avoid blocking today's play
+              console.warn('Saved game country mismatch; ignoring saved state.');
+              return;
+            }
+
+            // only treat as "played today" if they've completed (won) today
+            if (state.gameState === 'won') {
+              setHasPlayedToday(true);
+            } else {
+              setHasPlayedToday(false);
+            }
+            setGameState(state.gameState || 'playing');
+            setAttempts(state.attempts || []);
+            setFinalTime(state.finalTime || 0);
+            if (state.startTime) {
+              setStartTime(state.startTime);
+            }
+          }
+        } catch (error) {
+          console.error('Error loading game state:', error);
+        }
+      }
+
+      function saveGameState() {
+        try {
+          const key = todayKey();
+          const state = {
+            gameState,
+            attempts,
+            finalTime,
+            country: dailyLocation.country,
+            startTime,
+            locationIndex: dailyLocation._index,
+          };
+          localStorage.setItem(`game-state-${key}`, JSON.stringify(state));
+        } catch (error) {
+          console.error('Error saving game state:', error);
+        }
+      }
+
+      function loadLeaderboard() {
+        try {
+          const key = todayKey();
+          const saved = localStorage.getItem(`leaderboard-${key}`);
+          if (saved) setLeaderboard(JSON.parse(saved));
+        } catch (error) {
+          setLeaderboard([]);
+        }
+      }
+
+      function saveToLeaderboard(name, time, attemptCount) {
+        try {
+          const key = todayKey();
+          const newEntry = {
+            name,
+            time,
+            attempts: attemptCount,
+            score: Math.round(10000 / (Math.max(time,1) * Math.max(attemptCount,1))),
+          };
+          const updated = [...leaderboard, newEntry]
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 10);
+          setLeaderboard(updated);
+          localStorage.setItem(`leaderboard-${key}`, JSON.stringify(updated));
+        } catch (error) {
+          console.error('Error saving to leaderboard:', error);
+        }
+      }
+
+      function getCoordsForCountry(country) {
+        // prefer COUNTRY_COORDS; if missing, try LOCATIONS entries
+        if (COUNTRY_COORDS[country]) return COUNTRY_COORDS[country];
+        const fromLocations = LOCATIONS.find(l => l.country === country);
+        if (fromLocations && fromLocations.lat != null && fromLocations.lng != null) {
+          return { lat: fromLocations.lat, lng: fromLocations.lng };
+        }
+        return null;
+      }
+
+      function handleGuess() {
+        if (!selectedCountry || gameState !== 'playing') return;
+
+        // determine target coords: prefer LOCATIONS lat/lng for the day's exact photo, fallback to COUNTRY_COORDS
+        const targetFromLocation = dailyLocation && dailyLocation.lat != null && dailyLocation.lng != null ? { lat: dailyLocation.lat, lng: dailyLocation.lng } : getCoordsForCountry(dailyLocation.country);
+        const guessCoords = getCoordsForCountry(selectedCountry);
+
+        if (selectedCountry === dailyLocation.country) {
+          const timeElapsed = Math.round((Date.now() - startTime) / 1000);
+          setFinalTime(timeElapsed);
+          setGameState('won');
+          setHasPlayedToday(true);
+
+          const newAttempts = [...attempts, { country: selectedCountry, distance: 0 }];
+          setAttempts(newAttempts);
+
+          // immediate save happens via autosave effect
+        } else {
+          let distance = 0;
+          if (guessCoords && targetFromLocation) {
+            distance = calculateDistance(
+              guessCoords.lat, guessCoords.lng,
+              targetFromLocation.lat, targetFromLocation.lng
+            );
+          } else {
+            // fallback random distance if coords missing
+            distance = Math.floor(Math.random() * 5000) + 1000;
+          }
+          setAttempts(prev => [...prev, { country: selectedCountry, distance }]);
+        }
+
+        setSelectedCountry('');
+      }
+
+      function handleSubmitScore() {
+        if (playerName.trim()) {
+          saveToLeaderboard(playerName.trim(), finalTime, attempts.length);
+          setShowLeaderboard(true);
+        }
+      }
+
+      function formatTime(seconds) {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+      }
+
+      const elapsed = gameState === 'playing' ? Math.round((Date.now() - startTime) / 1000) : finalTime;
+
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+          <div className="container mx-auto px-4 py-8 max-w-6xl">
+            <div className="text-center mb-8">
+              <div className="flex items-center justify-center gap-3 mb-4">
+                <Globe />
+                <h1 className="text-4xl md:text-5xl font-bold text-gray-800">Daily Location Guesser</h1>
+              </div>
+              <p className="text-gray-600 text-lg">Guess the country from today's photo!</p>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-6">
+              <div className="md:col-span-2">
+                <div className="bg-white rounded-2xl shadow-xl overflow-hidden">
+                  <div className="relative h-96 bg-gray-200">
+                    <img src={dailyLocation.image} alt="Mystery location" className="w-full h-full object-cover" />
+                    <div className="absolute bottom-4 left-4 bg-black/50 px-3 py-1 rounded text-white text-sm">
+                      {dailyLocation.description}
+                    </div>
+                    <div className="absolute top-4 right-4 bg-white/90 px-4 py-2 rounded-full flex items-center gap-2">
+                      <Clock />
+                      <span className="font-semibold">
+                        {gameState === 'playing' ? formatTime(elapsed) : formatTime(finalTime)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="p-6">
+                    {gameState === 'playing' && !hasPlayedToday && (
+                      <div className="space-y-4">
+                        <div className="flex gap-3">
+                          <label className="sr-only">Select a country</label>
+                          <select value={selectedCountry} onChange={(e) => setSelectedCountry(e.target.value)} className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg">
+                            <option value="">Select a country...</option>
+                            {COUNTRIES.map((country) => <option key={country} value={country}>{country}</option>)}
+                          </select>
+                          <button onClick={handleGuess} disabled={!selectedCountry} className="px-8 py-3 bg-indigo-600 text-white rounded-lg font-semibold disabled:bg-gray-400">
+                            Guess
+                          </button>
+                        </div>
+
+                        {attempts.length > 0 && (
+                          <div className="space-y-2">
+                            <h3 className="font-semibold text-gray-700 flex items-center gap-2"><Target />Previous Attempts ({attempts.length})</h3>
+                            <div className="space-y-2 max-h-48 overflow-y-auto">
+                              {attempts.map((attempt, idx) => (
+                                <div key={idx} className="flex justify-between items-center p-3 bg-red-50 rounded-lg border border-red-200">
+                                  <span className="font-medium text-gray-800">{attempt.country}</span>
+                                  <span className="text-red-600 font-semibold">{attempt.distance.toLocaleString()} miles away</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {gameState === 'won' && (
+                      <div className="text-center space-y-4">
+                        <div className="text-6xl">🎉</div>
+                        <h2 className="text-3xl font-bold text-green-600">Correct!</h2>
+                        <p className="text-xl text-gray-700">The location was <span className="font-bold">{dailyLocation.country}</span></p>
+
+                        <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
+                          <div className="bg-indigo-50 p-4 rounded-lg">
+                            <div className="text-sm text-gray-600">Time</div>
+                            <div className="text-2xl font-bold text-indigo-600">{formatTime(finalTime)}</div>
+                          </div>
+                          <div className="bg-indigo-50 p-4 rounded-lg">
+                            <div className="text-sm text-gray-600">Attempts</div>
+                            <div className="text-2xl font-bold text-indigo-600">{attempts.length}</div>
+                          </div>
+                        </div>
+
+                        {!showLeaderboard && (
+                          <div className="space-y-3">
+                            <input type="text" value={playerName} onChange={(e) => setPlayerName(e.target.value)} placeholder="Enter your name for leaderboard" className="px-4 py-3 border-2 border-gray-300 rounded-lg w-full max-w-md mx-auto block" onKeyPress={(e) => e.key === 'Enter' && handleSubmitScore()} />
+                            <button onClick={handleSubmitScore} disabled={!playerName.trim()} className="px-8 py-3 bg-green-600 text-white rounded-lg font-semibold disabled:bg-gray-400">Submit Score</button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {hasPlayedToday && gameState === 'playing' && (
+                      <div className="text-center py-8">
+                        <div className="text-4xl mb-4">✅</div>
+                        <h2 className="text-2xl font-bold text-gray-700 mb-2">You've already played today!</h2>
+                        <p className="text-gray-600">Come back tomorrow for a new location</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="md:col-span-1">
+                <div className="bg-white rounded-2xl shadow-xl p-6 sticky top-8">
+                  <div className="flex items-center gap-2 mb-4">
+                    <Trophy />
+                    <h2 className="text-2xl font-bold text-gray-800">Today's Leaders</h2>
+                  </div>
+
+                  {leaderboard.length === 0 ? (
+                    <p className="text-gray-500 text-center py-8">No scores yet today!</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {leaderboard.map((entry, idx) => (
+                        <div key={idx} className={`p-3 rounded-lg ${idx === 0 ? 'bg-yellow-50 border-2 border-yellow-300' : idx === 1 ? 'bg-gray-50 border-2 border-gray-300' : idx === 2 ? 'bg-orange-50 border-2 border-orange-300' : 'bg-gray-50'}`}> 
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-bold text-gray-800">{idx + 1}. {entry.name}</span>
+                            <span className="text-sm font-semibold">{entry.score}</span>
+                          </div>
+                          <div className="text-sm text-gray-600">{entry.time}s · {entry.attempts} attempts</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      );
+    }
+
+    // Use createRoot for React 18
+    const rootEl = document.getElementById('root');
+    if (ReactDOM.createRoot) {
+      ReactDOM.createRoot(rootEl).render(<LocationGuesser />);
+    } else {
+      ReactDOM.render(<LocationGuesser />, rootEl);
+    }
+  </script>
+</body>
+</html>
