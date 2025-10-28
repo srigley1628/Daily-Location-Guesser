@@ -1,0 +1,9 @@
+{
+  "name": "daily-location-guesser",
+  "version": "1.0.0",
+  "description": "Daily Location Guesser (with leaderboard API)",
+  "private": true,
+  "dependencies": {
+    "@supabase/supabase-js": "^2.0.0"
+  }
+}
